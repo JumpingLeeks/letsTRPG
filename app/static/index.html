@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI TRPG Real-time</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&family=Outfit:wght@500;700&family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --panel-dark: #1e293b;
+            --primary: #8b5cf6;
+            --text-main: #f1f5f9;
+            --text-dim: #94a3b8;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { 
+            font-family: 'Noto Sans KR', sans-serif; 
+            background: var(--bg-dark); 
+            color: var(--text-main);
+            height: 100vh;
+            display: flex;
+            overflow: hidden;
+        }
+        /* 로그인 화면 */
+        #login-overlay {
+            position: fixed; inset: 0; background: var(--bg-dark);
+            z-index: 100; display: flex; align-items: center; justify-content: center;
+        }
+        .login-box {
+            background: var(--panel-dark); padding: 40px; border-radius: 20px;
+            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); width: 100%; max-width: 400px;
+            text-align: center; border: 1px solid rgba(255,255,255,0.1);
+        }
+        input {
+            width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 8px;
+            border: 1px solid #334155; background: #0f172a; color: white;
+        }
+        .btn-send {
+            background: var(--primary); color: white; border: none; padding: 12px;
+            border-radius: 8px; cursor: pointer; font-weight: bold; width: 100%;
+        }
+        
+        /* 방 목록 스타일 */
+        #session-list { margin-top: 20px; text-align: left; max-height: 200px; overflow-y: auto; }
+        .session-item {
+            background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px;
+            margin-bottom: 8px; cursor: pointer; display: flex; justify-content: space-between;
+            font-size: 0.9rem; transition: all 0.2s;
+        }
+        .session-item:hover { border: 1px solid var(--primary); background: rgba(139, 92, 246, 0.1); }
+
+        /* 메인 레이아웃 */
+        #game-container { display: none; width: 100%; height: 100%; }
+        main { flex: 1; display: flex; flex-direction: column; padding: 20px; position: relative; }
+        aside { width: 300px; background: var(--panel-dark); border-left: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; padding: 20px; }
+
+        #chat-log { 
+            flex: 1; overflow-y: auto; padding: 10px;
+            display: flex; flex-direction: column; gap: 15px;
+            scrollbar-width: thin; scrollbar-color: var(--primary) transparent;
+        }
+        .msg { max-width: 85%; padding: 12px 16px; border-radius: 15px; line-height: 1.6; position: relative; }
+        .gm-msg { background: #334155; align-self: flex-start; border-bottom-left-radius: 2px; }
+        .user-msg { background: var(--primary); align-self: flex-end; border-bottom-right-radius: 2px; }
+        .system-msg { align-self: center; background: rgba(239, 68, 68, 0.1); color: #f87171; font-size: 0.85rem; border: 1px solid #ef4444; }
+
+        .gm-tag { display: block; font-size: 0.7rem; font-weight: bold; color: var(--primary); margin-bottom: 4px; text-transform: uppercase; }
+
+        #controls { padding: 20px; display: flex; gap: 10px; background: var(--panel-dark); border-radius: 15px; margin-top: 10px; }
+        
+        /* 사이드바 요소 */
+        .sidebar-title { font-family: 'Outfit'; font-size: 1.1rem; color: var(--primary); margin-bottom: 20px; display: flex; justify-content: space-between; }
+        .player-card {
+            background: rgba(255,255,255,0.05); padding: 12px; border-radius: 10px; margin-bottom: 10px;
+            border: 1px solid transparent; transition: all 0.3s;
+        }
+        .player-card.active { border-color: var(--primary); background: rgba(139, 92, 246, 0.1); box-shadow: 0 0 15px rgba(139, 92, 246, 0.3); }
+        .player-name { font-weight: bold; font-size: 0.95rem; }
+        .player-status { font-size: 0.75rem; color: var(--text-dim); }
+
+        #turn-timer { margin-top: auto; padding: 15px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 10px; margin-bottom: 10px; }
+        #timer-count { font-size: 1.5rem; font-weight: bold; font-family: 'Outfit'; color: #ef4444; }
+
+        @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
+    </style>
+</head>
+<body onload="initLobbySocket()">
+    <div id="login-overlay">
+        <div class="login-box">
+            <h1 style="margin-bottom:20px; font-family:'Outfit'; color:var(--primary);">TRPG Real-time</h1>
+            <input type="text" id="join-session" placeholder="방 번호">
+            <div style="display:flex; gap:5px; margin-bottom:20px;">
+                <input type="text" id="join-name" placeholder="닉네임">
+                <button class="btn-send" style="padding:10px; width:50px;" onclick="generateNickname()">🎲</button>
+            </div>
+            <button class="btn-send" onclick="joinGame()">모험 시작하기</button>
+            <div id="session-list">
+                <div id="sessions-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="game-container">
+        <main>
+            <div id="chat-log"></div>
+            <div id="controls">
+                <input type="text" id="user-input" placeholder="행동을 입력하세요..." onkeypress="if(event.keyCode==13) sendChat()">
+                <button class="btn-send" style="width:80px;" onclick="sendChat()">전송</button>
+            </div>
+        </main>
+        <aside>
+            <div class="sidebar-title">Party Members</div>
+            <div id="host-controls" style="margin-bottom:15px; display:none;">
+                <button class="btn-send" style="background:#10b981;" onclick="startGame()">🚀 모험 시작</button>
+            </div>
+            <div id="player-list"></div>
+            <div id="turn-timer" style="display:none;">
+                <div style="font-size:0.75rem; color:#ef4444;">TIME REMAINING</div>
+                <div id="timer-count">30s</div>
+            </div>
+            <button class="btn-send" style="background:#451a1a; color:#f87171; border:1px solid #7f1d1d; font-size:0.8rem;" onclick="location.reload()">🚪 나가기</button>
+        </aside>
+    </div>
+
+    <script>
+        let myName = "";
+        let mySession = "";
+        let isHost = false; 
+        let displayedMessageCount = 0;
+        let socket = null;
+        let lobbySocket = null;
+        let timerInterval = null;
+
+        function generateNickname() {
+            const adjectives = ["용감한", "무심한", "빛나는", "어리석은", "신비로운", "졸린", "배고픈", "단단한", "은밀한", "위대한"];
+            const nouns = ["사자", "토끼", "독수리", "민들레", "올빼미", "고양이", "늑대", "거북이", "소나무", "고래"];
+            const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
+            const noun = nouns[Math.floor(Math.random() * nouns.length)];
+            document.getElementById('join-name').value = `${adj} ${noun}`;
+        }
+
+        function initLobbySocket() {
+            generateNickname();
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            lobbySocket = new WebSocket(`${protocol}//${window.location.host}/ws-lobby`);
+
+            lobbySocket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "lobby_update") {
+                    renderSessions(data.sessions);
+                }
+            };
+        }
+
+        function renderSessions(sessions) {
+            const container = document.getElementById('sessions-container');
+            container.innerHTML = sessions.length ? "" : "활성화된 방이 없습니다.";
+            sessions.forEach(s => {
+                const item = document.createElement('div');
+                item.className = 'session-item';
+                item.innerHTML = `<span>🏠 방 번호: ${s.session_id}</span><span>👥 ${s.player_count}/${s.max_players}</span>`;
+                item.onclick = () => document.getElementById('join-session').value = s.session_id;
+                container.appendChild(item);
+            });
+        }
+
+        async function joinGame() {
+            mySession = document.getElementById('join-session').value.trim();
+            const rawName = document.getElementById('join-name').value.trim();
+            if (!mySession || !rawName) return alert("입력 정보 부족");
+
+            try {
+                const res = await fetch('/join', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: mySession, player_name: rawName })
+                });
+                const data = await res.json();
+                myName = data.player_name;
+                isHost = data.is_host; 
+                
+                document.getElementById('login-overlay').style.display = 'none';
+                document.getElementById('game-container').style.display = 'flex';
+                
+                // 로비 소켓 닫고 게임 소켓 열기
+                if (lobbySocket) lobbySocket.close();
+                initWebSocket();
+            } catch (e) { alert("입장 실패"); }
+        }
+
+        async function startGame() {
+            try {
+                const res = await fetch('/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: mySession, player_name: myName })
+                });
+                if (!res.ok) alert("시작 실패: " + (await res.text()));
+            } catch (e) { alert("에러: " + e.message); }
+        }
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            socket = new WebSocket(`${protocol}//${window.location.host}/ws/${mySession}`);
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "state_update" || data.type === "player_joined") {
+                    updateUI(data.state);
+                } else if (data.type === "time_sync") {
+                    // 서버 시간과의 동기화는 서버 내부 로직에 의해 갱신된 상태가 올 때 타이머가 업데이트됨
+                }
+            };
+
+            socket.onclose = () => {
+                appendMsg("서버와의 연결이 끊겼습니다.", "system-msg");
+            };
+        }
+
+        function updateUI(state) {
+            if (!state) return;
+
+            // 1. 메시지 갱신
+            if (state.messages && state.messages.length > displayedMessageCount) {
+                for (let i = displayedMessageCount; i < state.messages.length; i++) {
+                    const msg = state.messages[i];
+                    if (msg.sender !== myName) {
+                        appendMsg(msg.text, 'gm-msg', msg.sender);
+                    }
+                }
+                displayedMessageCount = state.messages.length;
+            }
+
+            // 2. 플레이어 목록 및 현재 턴 갱신
+            const list = document.getElementById('player-list');
+            const isRoundResolving = state.is_started && state.current_turn >= state.players.length;
+            const currentTurnPlayer = (state.is_started && !isRoundResolving) ? state.players[state.current_turn] : null;
+            
+            list.innerHTML = "";
+            state.players.forEach((p, idx) => {
+                const card = document.createElement('div');
+                card.className = `player-card ${p === currentTurnPlayer ? 'active' : ''}`;
+                card.innerHTML = `
+                    <div class="player-name">${p === myName ? '⭐ ' + p : p} ${p === state.host_name ? '(방장)' : ''}</div>
+                    <div class="player-status">${p === currentTurnPlayer ? 'THINKING...' : (isRoundResolving ? 'READY' : 'WAITING')}</div>
+                `;
+                list.appendChild(card);
+            });
+
+            // 3. 방장 시작 버튼 제어
+            const hostControls = document.getElementById('host-controls');
+            hostControls.style.display = (isHost && !state.is_started) ? 'block' : 'none';
+
+            // 4. 타이머 및 입력 제어
+            const timerArea = document.getElementById('turn-timer');
+            const userInput = document.getElementById('user-input');
+
+            if (!state.is_started) {
+                timerArea.style.display = 'none';
+                userInput.disabled = true;
+                userInput.placeholder = "방장이 모험을 시작하기를 기다리는 중...";
+            } else if (isRoundResolving) {
+                timerArea.style.display = 'none';
+                userInput.disabled = true;
+                userInput.placeholder = "AI GM이 상황을 정리 중입니다...";
+            } else {
+                timerArea.style.display = 'block';
+                updateTimer(state.turn_start_time);
+                
+                if (myName !== currentTurnPlayer) {
+                    userInput.disabled = true;
+                    userInput.placeholder = `${currentTurnPlayer}님의 턴을 기다리는 중...`;
+                } else {
+                    userInput.disabled = false;
+                    userInput.placeholder = "당신의 차례입니다! 행동을 입력하세요.";
+                }
+            }
+        }
+
+        function updateTimer(startTime) {
+            const timerCount = document.getElementById('timer-count');
+            if (timerInterval) clearInterval(timerInterval);
+            
+            const refresh = () => {
+                const now = Date.now() / 1000;
+                const elapsed = now - startTime;
+                const remaining = Math.max(0, Math.floor(30 - (now - startTime))); // 오프셋 생략(실시간성)
+                timerCount.innerText = `${remaining}s`;
+                if (remaining <= 5) timerCount.style.animation = "blink 0.5s infinite alternate";
+                else timerCount.style.animation = "none";
+            };
+            refresh();
+            timerInterval = setInterval(refresh, 1000);
+        }
+
+        function appendMsg(text, type, tag = "") {
+            const chatLog = document.getElementById('chat-log');
+            const div = document.createElement('div');
+            div.className = `msg ${type}`;
+            if (tag) div.innerHTML = `<span class="gm-tag">${tag}</span>`;
+            
+            // 본인 이름의 선택지 필터링
+            const choiceRegex = new RegExp(`\\[${myName} 선택지 \\d+\\((\\d+)\\): (.+?)\\]`, 'g');
+            const choices = [...text.matchAll(choiceRegex)].map(m => ({ prob: m[1], text: m[2] }));
+            const cleanText = text.replace(/\[.+? 선택지 \d+\(\d+\): .+?\]/g, '').trim();
+            
+            const content = document.createElement('span');
+            content.innerText = cleanText;
+            div.appendChild(content);
+
+            if (choices.length > 0 && type === 'gm-msg') {
+                const btnContainer = document.createElement('div');
+                btnContainer.style.marginTop = '10px';
+                choices.forEach(c => {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-send';
+                    btn.style.padding = '8px'; btn.style.fontSize = '0.8rem'; btn.style.marginBottom = '5px';
+                    btn.innerText = `🎲 ${c.text} (${c.prob}%)`;
+                    btn.onclick = () => {
+                        handleChoice(c);
+                        btnContainer.remove();
+                    };
+                    btnContainer.appendChild(btn);
+                });
+                div.appendChild(btnContainer);
+            }
+
+            chatLog.appendChild(div);
+            chatLog.scrollTop = chatLog.scrollHeight;
+        }
+
+        async function handleChoice(c) {
+            const roll = Math.floor(Math.random() * 100) + 1;
+            const success = roll <= c.prob;
+            const status = success ? "성공" : "실패";
+            appendMsg(`🎲 ${c.text} (${status}! 주사위:${roll})`, 'user-msg', myName);
+            const report = `[사용자 선택: "${c.text}", 판정 결과: ${status}, 주사위: ${roll}, 기준: ${c.prob}]`;
+            sendChat(report, true);
+        }
+
+        async function sendChat(overrideMsg = null, isHidden = false) {
+            const input = document.getElementById('user-input');
+            const msg = overrideMsg || input.value.trim();
+            if (!msg) return;
+            if (!isHidden) appendMsg(msg, 'user-msg', myName);
+            input.value = "";
+
+            try {
+                await fetch('/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: mySession, player_name: myName, message: msg })
+                });
+                // 이제 결과는 웹소켓 state_update를 통해 모두에게 전달됨
+            } catch (e) { appendMsg("전송 에러", "system-msg"); }
+        }
+    </script>
+</body>
+</html>
