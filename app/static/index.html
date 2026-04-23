@@ -83,6 +83,101 @@
         #timer-count { font-size: 1.5rem; font-weight: bold; font-family: 'Outfit'; color: #ef4444; }
 
         @keyframes blink { from { opacity: 1; } to { opacity: 0.5; } }
+        
+        /* 긴급 상황 애니메이션 */
+        @keyframes panic-blink {
+            0% { background: var(--bg-dark); }
+            50% { background: #450a0a; } /* 검붉은 색 */
+            100% { background: var(--bg-dark); }
+        }
+        .panic-mode {
+            animation: panic-blink 2s infinite;
+        }
+
+        /* 로딩 스피너 */
+        .spinner {
+            display: none;
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(139, 92, 246, 0.3);
+            border-top: 2px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 전략 채팅 영역 */
+        #strategy-area {
+            margin-top: 20px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            padding-top: 20px;
+            overflow: hidden;
+        }
+        #strategy-log {
+            flex: 1;
+            overflow-y: auto;
+            font-size: 0.8rem;
+            margin-bottom: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .strategy-msg {
+            background: rgba(255,255,255,0.05);
+            padding: 8px 10px;
+            border-radius: 8px;
+            border-left: 3px solid var(--primary);
+        }
+        .strategy-user { font-weight: bold; color: var(--primary); margin-right: 5px; }
+        .strategy-time { font-size: 0.65rem; color: var(--text-dim); float: right; }
+        
+        #strategy-input {
+            background: #0f172a;
+            border: 1px solid #334155;
+            padding: 8px;
+            font-size: 0.8rem;
+            border-radius: 5px;
+            color: white;
+            width: 100%;
+        }
+        /* 스킬 정보 스타일 */
+        .skill-info { font-size: 0.7rem; color: #a78bfa; margin-top: 5px; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 5px; }
+        .skill-price { color: #f87171; font-style: italic; }
+
+        /* 스탯 바 스타일 */
+        .stats-container { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+        .stat-row { display: flex; align-items: center; gap: 8px; font-size: 0.65rem; color: #cbd5e1; }
+        .bar-bg { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
+        .bar-fill { height: 100%; transition: width 0.3s ease; }
+        .hp-fill { background: linear-gradient(90deg, #ef4444, #f87171); }
+        .ap-fill { background: linear-gradient(90deg, #3b82f6, #60a5fa); }
+
+        /* 상태 배지 */
+        .status-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.6rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-left: 5px;
+        }
+        .badge-dying { background: #7f1d1d; color: #f87171; border: 1px solid #991b1b; }
+        .badge-dead { background: #000; color: #4b5563; border: 1px solid #1f2937; }
+        .badge-exhausted { background: #334155; color: #94a3b8; border: 1px solid #475569; }
+
+        #skill-form {
+            background: rgba(139, 92, 246, 0.1); padding: 15px; border-radius: 10px;
+            margin-bottom: 20px; border: 1px solid var(--primary);
+        }
+        .btn-skill { background: #059669; color: white; border: none; padding: 12px; border-radius: 8px; cursor: pointer; font-weight: bold; }
     </style>
 </head>
 <body onload="initLobbySocket()">
@@ -103,14 +198,28 @@
 
     <div id="game-container">
         <main>
+            <!-- 게임 시작 전 스킬 등록 -->
+            <div id="skill-form">
+                <div style="font-size:0.85rem; font-weight:bold; margin-bottom:10px;">✨ 고유 스킬 등록 (시작 전 1회 가능)</div>
+                <div style="display:flex; gap:5px;">
+                    <input type="text" id="reg-skill-name" placeholder="스킬 이름" style="flex:1;">
+                    <input type="text" id="reg-skill-ability" placeholder="능력 설명" style="flex:2;">
+                    <button class="btn-send" style="width:80px;" onclick="registerSkill()">등록</button>
+                </div>
+            </div>
+
             <div id="chat-log"></div>
             <div id="controls">
                 <input type="text" id="user-input" placeholder="행동을 입력하세요..." onkeypress="if(event.keyCode==13) sendChat()">
-                <button class="btn-send" style="width:80px;" onclick="sendChat()">전송</button>
+                <button class="btn-send" style="width:70px;" onclick="sendChat()">전송</button>
+                <button id="skill-btn" class="btn-skill" style="display:none;" onclick="useSkill()">✨ 스킬 사용</button>
             </div>
         </main>
         <aside>
-            <div class="sidebar-title">Party Members</div>
+            <div class="sidebar-title">
+                Party Members
+                <div id="gm-spinner" class="spinner"></div>
+            </div>
             <div id="host-controls" style="margin-bottom:15px; display:none;">
                 <button class="btn-send" style="background:#10b981;" onclick="startGame()">🚀 모험 시작</button>
             </div>
@@ -119,7 +228,15 @@
                 <div style="font-size:0.75rem; color:#ef4444;">TIME REMAINING</div>
                 <div id="timer-count">30s</div>
             </div>
-            <button class="btn-send" style="background:#451a1a; color:#f87171; border:1px solid #7f1d1d; font-size:0.8rem;" onclick="location.reload()">🚪 나가기</button>
+
+            <!-- 전략 채팅 섹션 -->
+            <div id="strategy-area">
+                <div style="font-size:0.75rem; color:var(--primary); font-weight:bold; margin-bottom:10px;">STRATEGY CHAT</div>
+                <div id="strategy-log"></div>
+                <input type="text" id="strategy-input" placeholder="전략 토의..." onkeypress="if(event.keyCode==13) sendStrategyChat()">
+            </div>
+
+            <button class="btn-send" style="background:#451a1a; color:#f87171; border:1px solid #7f1d1d; font-size:0.8rem; margin-top:20px;" onclick="location.reload()">🚪 나가기</button>
         </aside>
     </div>
 
@@ -128,6 +245,7 @@
         let mySession = "";
         let isHost = false; 
         let displayedMessageCount = 0;
+        let displayedStrategyCount = 0; // 전략 채팅용 카운트
         let socket = null;
         let lobbySocket = null;
         let timerInterval = null;
@@ -232,61 +350,131 @@
                 displayedMessageCount = state.messages.length;
             }
 
+            // 1-1. 전략 메시지 갱신
+            if (state.strategy_messages && state.strategy_messages.length > displayedStrategyCount) {
+                for (let i = displayedStrategyCount; i < state.strategy_messages.length; i++) {
+                    appendStrategyMsg(state.strategy_messages[i]);
+                }
+                displayedStrategyCount = state.strategy_messages.length;
+            }
+
             // 2. 플레이어 목록 및 현재 턴 갱신
             const list = document.getElementById('player-list');
+            
+            // AI가 오프닝을 작성 중인지, 혹은 라운드를 정리 중인지 판단
+            const isOpeningGeneration = state.is_started && state.messages.length === 0;
             const isRoundResolving = state.is_started && state.current_turn >= state.players.length;
-            const currentTurnPlayer = (state.is_started && !isRoundResolving) ? state.players[state.current_turn] : null;
+            const isProcessing = isOpeningGeneration || isRoundResolving;
+
+            const currentTurnPlayer = (state.is_started && !isProcessing) ? state.players[state.current_turn] : null;
             
             list.innerHTML = "";
             state.players.forEach((p, idx) => {
+                const skill = state.player_skills[p];
+                const stats = state.player_stats[p] || {hp: 10, ap: 10};
+                const status = state.player_statuses[p] || "Alive";
+                const dyingCount = state.dying_counters[p] || 0;
+                
+                let badgeHtml = "";
+                if (status === "Dying") badgeHtml = `<span class="status-badge badge-dying">빈사 (${dyingCount}턴 남음)</span>`;
+                else if (status === "Dead") badgeHtml = `<span class="status-badge badge-dead">사망</span>`;
+                else if (status === "Exhausted") badgeHtml = `<span class="status-badge badge-exhausted">탈진 (턴 스킵)</span>`;
+
+                const skillHtml = skill ? `
+                    <div class="skill-info">
+                        <b>✨ ${skill.skill_name}</b>: ${skill.ability}<br>
+                        <span class="skill-price">💀 대가: ${skill.price}</span>
+                    </div>
+                ` : '<div class="skill-info"><i>스킬 미등록</i></div>';
+
                 const card = document.createElement('div');
                 card.className = `player-card ${p === currentTurnPlayer ? 'active' : ''}`;
+                if (status === "Dead" || status === "Dying") card.style.opacity = "0.6";
+                
                 card.innerHTML = `
-                    <div class="player-name">${p === myName ? '⭐ ' + p : p} ${p === state.host_name ? '(방장)' : ''}</div>
-                    <div class="player-status">${p === currentTurnPlayer ? 'THINKING...' : (isRoundResolving ? 'READY' : 'WAITING')}</div>
+                    <div class="player-name">${p === myName ? '⭐ ' + p : p} ${p === state.host_name ? '(방장)' : ''} ${badgeHtml}</div>
+                    <div class="player-status">${p === currentTurnPlayer ? 'THINKING...' : (isProcessing ? 'READY' : 'WAITING')}</div>
+                    
+                    <div class="stats-container">
+                        <div class="stat-row">
+                            <span style="width:15px;">HP</span>
+                            <div class="bar-bg"><div class="bar-fill hp-fill" style="width: ${stats.hp * 10}%"></div></div>
+                            <span style="width:25px; text-align:right;">${stats.hp}/10</span>
+                        </div>
+                        <div class="stat-row">
+                            <span style="width:15px;">AP</span>
+                            <div class="bar-bg"><div class="bar-fill ap-fill" style="width: ${stats.ap * 10}%"></div></div>
+                            <span style="width:25px; text-align:right;">${stats.ap}/10</span>
+                        </div>
+                    </div>
+
+                    ${skillHtml}
                 `;
                 list.appendChild(card);
             });
 
-            // 3. 방장 시작 버튼 제어
+            // 3. 방장 시작 버튼 및 스피너 제어
             const hostControls = document.getElementById('host-controls');
+            const gmSpinner = document.getElementById('gm-spinner');
+            const skillForm = document.getElementById('skill-form');
+            
             hostControls.style.display = (isHost && !state.is_started) ? 'block' : 'none';
+            gmSpinner.style.display = isProcessing ? 'inline-block' : 'none';
+            skillForm.style.display = state.is_started ? 'none' : 'block';
 
             // 4. 타이머 및 입력 제어
             const timerArea = document.getElementById('turn-timer');
             const userInput = document.getElementById('user-input');
+            const skillBtn = document.getElementById('skill-btn');
 
             if (!state.is_started) {
                 timerArea.style.display = 'none';
                 userInput.disabled = true;
                 userInput.placeholder = "방장이 모험을 시작하기를 기다리는 중...";
-            } else if (isRoundResolving) {
+                skillBtn.style.display = 'none';
+            } else if (isProcessing) {
                 timerArea.style.display = 'none';
                 userInput.disabled = true;
-                userInput.placeholder = "AI GM이 상황을 정리 중입니다...";
+                userInput.placeholder = isOpeningGeneration ? "장엄한 모험을 준비 중입니다..." : "AI GM이 상황을 정리 중입니다...";
+                skillBtn.style.display = 'none';
+                
+                if (timerInterval) clearInterval(timerInterval);
+                document.body.classList.remove('panic-mode');
             } else {
                 timerArea.style.display = 'block';
-                updateTimer(state.turn_start_time);
+                updateTimer(state.turn_start_time, state.current_turn);
                 
                 if (myName !== currentTurnPlayer) {
                     userInput.disabled = true;
                     userInput.placeholder = `${currentTurnPlayer}님의 턴을 기다리는 중...`;
+                    skillBtn.style.display = 'none';
                 } else {
                     userInput.disabled = false;
                     userInput.placeholder = "당신의 차례입니다! 행동을 입력하세요.";
+                    skillBtn.style.display = state.player_skills[myName] ? 'block' : 'none';
                 }
             }
         }
 
-        function updateTimer(startTime) {
+        function updateTimer(startTime, turnIndex) {
             const timerCount = document.getElementById('timer-count');
             if (timerInterval) clearInterval(timerInterval);
+            document.body.classList.remove('panic-mode'); // 턴 시작 시 초기화
+            
+            const limit = turnIndex === 0 ? 60 : 30;
             
             const refresh = () => {
                 const now = Date.now() / 1000;
-                const elapsed = now - startTime;
-                const remaining = Math.max(0, Math.floor(30 - (now - startTime))); // 오프셋 생략(실시간성)
+                const remaining = Math.max(0, Math.floor(limit - (now - startTime)));
                 timerCount.innerText = `${remaining}s`;
+
+                // 10초 남았을 때 검붉은 배경 깜빡임 활성화
+                if (remaining <= 10 && remaining > 0) {
+                    document.body.classList.add('panic-mode');
+                } else {
+                    document.body.classList.remove('panic-mode');
+                }
+
                 if (remaining <= 5) timerCount.style.animation = "blink 0.5s infinite alternate";
                 else timerCount.style.animation = "none";
             };
@@ -300,10 +488,13 @@
             div.className = `msg ${type}`;
             if (tag) div.innerHTML = `<span class="gm-tag">${tag}</span>`;
             
-            // 본인 이름의 선택지 필터링
-            const choiceRegex = new RegExp(`\\[${myName} 선택지 \\d+\\((\\d+)\\): (.+?)\\]`, 'g');
-            const choices = [...text.matchAll(choiceRegex)].map(m => ({ prob: m[1], text: m[2] }));
-            const cleanText = text.replace(/\[.+? 선택지 \d+\(\d+\): .+?\]/g, '').trim();
+            const choiceRegex = /\[(.+?) 선택지(?: \d+)?\((\d+)\): (.+?)\]/g;
+            const choices = [...text.matchAll(choiceRegex)].map(m => ({
+                pName: m[1],
+                prob: parseInt(m[2]),
+                text: m[3]
+            }));
+            const cleanText = text.replace(choiceRegex, '').trim();
             
             const content = document.createElement('span');
             content.innerText = cleanText;
@@ -313,15 +504,19 @@
                 const btnContainer = document.createElement('div');
                 btnContainer.style.marginTop = '10px';
                 choices.forEach(c => {
-                    const btn = document.createElement('button');
-                    btn.className = 'btn-send';
-                    btn.style.padding = '8px'; btn.style.fontSize = '0.8rem'; btn.style.marginBottom = '5px';
-                    btn.innerText = `🎲 ${c.text} (${c.prob}%)`;
-                    btn.onclick = () => {
-                        handleChoice(c);
-                        btnContainer.remove();
-                    };
-                    btnContainer.appendChild(btn);
+                    // 본인 이름의 선택지만 버튼으로 생성
+                    if (c.pName === myName) {
+                        const btn = document.createElement('button');
+                        btn.className = 'btn-send';
+                        btn.style.padding = '8px'; btn.style.fontSize = '0.8rem'; btn.style.marginBottom = '5px'; btn.style.marginRight = '5px';
+                        // [보완] 확률 수치(%) 노출 제거
+                        btn.innerText = `🎲 ${c.text}`;
+                        btn.onclick = () => {
+                            handleChoice(c);
+                            btnContainer.remove();
+                        };
+                        btnContainer.appendChild(btn);
+                    }
                 });
                 div.appendChild(btnContainer);
             }
@@ -354,6 +549,64 @@
                 });
                 // 이제 결과는 웹소켓 state_update를 통해 모두에게 전달됨
             } catch (e) { appendMsg("전송 에러", "system-msg"); }
+        }
+        async function sendStrategyChat() {
+            const input = document.getElementById('strategy-input');
+            const msg = input.value.trim();
+            if (!msg) return;
+            input.value = "";
+
+            try {
+                await fetch('/strategy_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: mySession, player_name: myName, message: msg })
+                });
+            } catch (e) {}
+        }
+
+        async function registerSkill() {
+            const skillName = document.getElementById('reg-skill-name').value.trim();
+            const ability = document.getElementById('reg-skill-ability').value.trim();
+            if (!skillName || !ability) return alert("스킬 이름과 능력을 모두 입력해주세요.");
+
+            try {
+                const res = await fetch('/register_skill', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: mySession, player_name: myName, skill_name: skillName, ability: ability })
+                });
+                if (res.ok) alert("스킬이 등록되었습니다!");
+            } catch (e) { alert("스킬 등록 실패"); }
+        }
+
+        async function useSkill() {
+            const input = document.getElementById('user-input');
+            const action = input.value.trim();
+            if (!action) return alert("스킬과 함께 수행할 행동을 입력해주세요.");
+
+            // 현재 내 스킬 정보 찾기
+            const res = await fetch(`/ws/${mySession}`); // (실제로는 state를 이미 가지고 있음)
+            // 전송 시 스킬 태그 부착
+            const skillName = document.querySelector(`.player-card.active .skill-info b`)?.innerText.replace('✨ ', '') || "고유 스킬";
+            const fullMsg = `[✨ 스킬 사용: ${skillName}] ${action}`;
+            
+            // 기존 sendChat 로직 재사용을 위해 input 값 조작 후 호출
+            input.value = fullMsg;
+            sendChat();
+        }
+
+        function appendStrategyMsg(data) {
+            const log = document.getElementById('strategy-log');
+            const div = document.createElement('div');
+            div.className = 'strategy-msg';
+            div.innerHTML = `
+                <span class="strategy-time">${data.time}</span>
+                <span class="strategy-user">${data.sender}:</span>
+                <span class="strategy-text">${data.text}</span>
+            `;
+            log.appendChild(div);
+            log.scrollTop = log.scrollHeight;
         }
     </script>
 </body>
