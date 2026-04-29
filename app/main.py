@@ -17,8 +17,19 @@ from app.services.ai_gm import AIGMService
 from app.services.dice import DiceService
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+    ]
+)
 logger = logging.getLogger("trpg-harness")
+# 외부 라이브러리 로그 레벨 조정 (너무 시끄러움 방지)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("google").setLevel(logging.WARNING)
 
 app = FastAPI(title="AI TRPG Real-time Server")
 ai_gm = AIGMService()
@@ -42,6 +53,7 @@ class SessionState(BaseModel):
     current_turn: int = 0
     pending_actions: List[dict] = []
     last_gm_response: str = ""
+    last_gm_choices: List[dict] = []
     messages: List[dict] = []
     strategy_messages: List[dict] = []
     player_skills: Dict[str, dict] = {} 
@@ -84,25 +96,31 @@ class ConnectionManager:
 
     async def broadcast_lobby(self, message: Any):
         for connection in self.lobby_connections:
-            try: await connection.send_json(message)
-            except: pass
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.warning(f"[WS_LOBBY] broadcast failed: {e}")
 
     async def connect(self, websocket: WebSocket, session_id: str):
         await websocket.accept()
         if session_id not in self.active_connections:
             self.active_connections[session_id] = []
         self.active_connections[session_id].append(websocket)
+        logger.info(f"[WS] Client connected to session '{session_id}' (total: {len(self.active_connections[session_id])})")
 
     def disconnect(self, websocket: WebSocket, session_id: str):
         if session_id in self.active_connections:
             if websocket in self.active_connections[session_id]:
                 self.active_connections[session_id].remove(websocket)
+                logger.info(f"[WS] Client disconnected from session '{session_id}' (remaining: {len(self.active_connections[session_id])})")
 
     async def broadcast(self, session_id: str, message: dict):
         if session_id in self.active_connections:
             for connection in self.active_connections[session_id]:
-                try: await connection.send_json(message)
-                except: pass
+                try:
+                    await connection.send_json(message)
+                except Exception as e:
+                    logger.warning(f"[WS] broadcast to session '{session_id}' failed: {e}")
 
 manager = ConnectionManager()
 sessions: Dict[str, SessionState] = {}
@@ -119,7 +137,9 @@ def handle_host_migration(state: SessionState, leaving_player: str):
             state.host_name = None
 
 async def resolve_round(state: SessionState):
-    incapacitated = []
+    logger.info(f"[RESOLVE] Starting round resolution for session '{state.session_id}'")
+    logger.info(f"[RESOLVE] Pending actions: {len(state.pending_actions)}")
+    
     for p in state.players:
         stats = state.player_stats.get(p, {"hp": 10, "ap": 10})
         status = state.player_statuses.get(p, "Alive")
@@ -127,42 +147,52 @@ async def resolve_round(state: SessionState):
             if status != "Dying":
                 state.player_statuses[p] = "Dying"
                 state.dying_counters[p] = 3
+                logger.info(f"[RESOLVE] {p} entered DYING state (3 turns)")
             else:
                 state.dying_counters[p] -= 1
-                if state.dying_counters[p] <= 0: state.player_statuses[p] = "Dead"
+                if state.dying_counters[p] <= 0:
+                    state.player_statuses[p] = "Dead"
+                    logger.info(f"[RESOLVE] {p} has DIED")
         elif stats["hp"] > 0 and status == "Dying":
             state.player_statuses[p] = "Alive"
             state.dying_counters[p] = 0
+            logger.info(f"[RESOLVE] {p} recovered from Dying -> Alive")
         if stats["ap"] <= 0 and state.player_statuses[p] == "Alive":
             state.player_statuses[p] = "Exhausted"
+            logger.info(f"[RESOLVE] {p} is now EXHAUSTED")
 
     departing = [p for p, c in state.missed_turns.items() if c >= 3]
     prompt = "--- ROUND SUMMARY ---\n"
     for a in state.pending_actions: prompt += f"[{a['player']}]: {a['action']}\n"
-    
+
     if departing:
+        logger.info(f"[RESOLVE] Departing players: {departing}")
         for p in departing:
             handle_host_migration(state, p)
             if p in state.players: state.players.remove(p)
             if p in state.missed_turns: del state.missed_turns[p]
-        prompt += f"\n[중요 알림] {', '.join(departing)}님이 파티에서 이탈했습니다.\n"
+        prompt += f"\n[중요 알림] {', '.join(departing)}님이 파티에서 이탈했습니다."
         await manager.broadcast_lobby({"type": "lobby_update", "sessions": get_sessions_info()})
     else:
-        prompt += "\n위 상황을 종합하여 장면을 전개하고, 각 플레이어별 선택지 3개를 제시해줘."
-    
-    prompt += "\n\n※ 주의: 지문이나 선택지에 확률(%) 정보를 절대 노출하지 마세요."
+        prompt += "\n위 행동들을 종합하여 서사를 전개하고, 각 생존 플레이어에게 선택지 3개를 제시하세요."
+
     try:
-        res_text = await ai_gm.generate_response(state, "SYSTEM", prompt)
-        state.last_gm_response = res_text
-        state.messages.append({"sender": "AI GM", "text": res_text})
+        logger.info(f"[RESOLVE] Calling AI GM for round resolution...")
+        response = await ai_gm.generate_response(state, "SYSTEM", prompt)
+        narrative = response.get("narrative", "")
+        choices = response.get("choices", [])
+        logger.info(f"[RESOLVE] ✅ AI response received: narrative={len(narrative)} chars, choices={len(choices)}")
+        state.last_gm_response = narrative
+        state.last_gm_choices = choices
+        state.messages.append({"sender": "AI GM", "text": narrative, "choices": choices})
         state.pending_actions = []
         state.current_turn = 0
         state.turn_start_time = time.time()
-        # 첫 번째 플레이어가 행동 가능한지 체크 (자동 턴 넘김)
         await advance_turn_if_needed(state)
         await manager.broadcast(state.session_id, {"type": "state_update", "state": state.dict()})
     except Exception as e:
-        logger.error(f"Resolution Error: {e}")
+        import traceback
+        logger.error(f"[RESOLVE] ❌ Resolution Error: {e}\n{traceback.format_exc()}")
 
 async def advance_turn_if_needed(state: SessionState):
     """행동 불능인 플레이어를 건너뜁니다."""
@@ -198,35 +228,48 @@ async def check_timeout(state: SessionState):
 
 @app.websocket("/ws-lobby")
 async def lobby_websocket(websocket: WebSocket):
+    logger.info("[WS_LOBBY] New lobby connection")
     await manager.connect_lobby(websocket)
     try:
         await websocket.send_json({"type": "lobby_update", "sessions": get_sessions_info()})
         while True:
             await asyncio.sleep(10)
-            try: await websocket.send_json({"type": "ping"})
-            except: break
-    except WebSocketDisconnect: pass
-    finally: manager.disconnect_lobby(websocket)
+            try:
+                await websocket.send_json({"type": "ping"})
+            except Exception as e:
+                logger.info(f"[WS_LOBBY] Ping failed, closing: {e}")
+                break
+    except WebSocketDisconnect:
+        logger.info("[WS_LOBBY] Client disconnected")
+    finally:
+        manager.disconnect_lobby(websocket)
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
+    logger.info(f"[WS] New game connection for session '{session_id}'")
     await manager.connect(websocket, session_id)
     try:
         if session_id in sessions:
             await websocket.send_json({"type": "state_update", "state": sessions[session_id].dict()})
+            logger.debug(f"[WS] Sent initial state to client for session '{session_id}'")
         while True:
             await asyncio.sleep(1)
             if session_id in sessions:
                 await check_timeout(sessions[session_id])
     except WebSocketDisconnect:
+        logger.info(f"[WS] Client disconnected from session '{session_id}'")
         manager.disconnect(websocket, session_id)
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
     sid = request.session_id
-    if sid not in sessions: raise HTTPException(404)
+    logger.info(f"[CHAT] session={sid}, player={request.player_name}, message_preview={request.message[:80]}")
+    if sid not in sessions:
+        logger.warning(f"[CHAT] Session '{sid}' not found")
+        raise HTTPException(404)
     state = sessions[sid]
     if state.current_turn >= len(state.players) or state.players[state.current_turn] != request.player_name:
+        logger.warning(f"[CHAT] Not {request.player_name}'s turn (current_turn={state.current_turn}, players={state.players})")
         raise HTTPException(403, "Not your turn")
 
     msg = request.message
@@ -241,8 +284,10 @@ async def chat(request: ChatRequest):
     await advance_turn_if_needed(state)
     state.turn_start_time = time.time()
     
+    logger.info(f"[CHAT] Turn advanced to {state.current_turn}/{len(state.players)}")
     await manager.broadcast(sid, {"type": "state_update", "state": state.dict()})
     if state.current_turn >= len(state.players):
+        logger.info(f"[CHAT] All players acted, triggering round resolution")
         await resolve_round(state)
     return {"status": "ok"}
 
@@ -257,40 +302,73 @@ async def register_skill(request: SkillRequest):
 @app.post("/start")
 async def start_game(request: JoinRequest):
     sid = request.session_id
-    if sid not in sessions: raise HTTPException(404)
+    logger.info(f"[START] Game start requested by '{request.player_name}' in session '{sid}'")
+    if sid not in sessions:
+        logger.warning(f"[START] Session '{sid}' not found")
+        raise HTTPException(404)
     state = sessions[sid]
-    if state.host_name != request.player_name or state.is_started: raise HTTPException(403)
-    
+    if state.host_name != request.player_name or state.is_started:
+        logger.warning(f"[START] Forbidden: host={state.host_name}, requester={request.player_name}, started={state.is_started}")
+        raise HTTPException(403)
+
     state.is_started = True
     state.turn_start_time = time.time()
     await manager.broadcast(sid, {"type": "state_update", "state": state.dict()})
-    
+
     p_names = ", ".join(state.players)
-    skills = "".join([f"- {p}: {s['skill_name']}({s['ability']})\n" for p, s in state.player_skills.items() if p in state.players])
-    
-    prompt = f"모험 시작! 플레이어: {p_names}\n{f'[스킬]\\n{skills}\\n[지시] 각 스킬의 대가를 [PRICE: 이름: 내용] 형식으로 정해줘.' if skills else ''}\n지문에 확률 노출 금지. 3개씩 선택지 제시."
+    skills_list = [(p, s) for p, s in state.player_skills.items() if p in state.players]
+    skill_text = ""
+    if skills_list:
+        skill_text = "[스킬 목록]\n" + "".join(
+            [f"- {p}: {s['skill_name']} ({s['ability']})\n" for p, s in skills_list]
+        ) + "\n각 스킬의 대가(HP/AP 소모량)를 price_declarations 배열에 반드시 포함하세요."
+    prompt = f"모험 시작! 플레이어: {p_names}\n{skill_text}\n장대한 오프닝 서사로 시작하고, 각 플레이어에게 선택지 3개를 제시하세요."
+    logger.info(f"[START] Players: {p_names}")
+    logger.info(f"[START] Calling AI GM for opening narrative...")
+
     try:
-        res = await ai_gm.generate_response(state, "SYSTEM", prompt)
-        import re
-        for p, price in re.findall(r'\[PRICE: (.+?): (.+?)\]', res):
-            if p in state.player_skills: state.player_skills[p]["price"] = price
-        state.messages.append({"sender": "AI GM", "text": res})
+        response = await ai_gm.generate_response(state, "SYSTEM", prompt)
+        narrative = response.get("narrative", "")
+        choices = response.get("choices", [])
+        price_declarations = response.get("price_declarations", [])
+        logger.info(f"[START] ✅ AI response: narrative={len(narrative)} chars, choices={len(choices)}, prices={len(price_declarations)}")
+
+        for decl in price_declarations:
+            p = decl.get("player", "")
+            desc = decl.get("description", "")
+            if p in state.player_skills:
+                state.player_skills[p]["price"] = desc
+                logger.info(f"[START] Skill price set: {p} -> {desc}")
+
+        state.last_gm_response = narrative
+        state.last_gm_choices = choices
+        state.messages.append({"sender": "AI GM", "text": narrative, "choices": choices})
         await manager.broadcast(sid, {"type": "state_update", "state": state.dict()})
         await manager.broadcast_lobby({"type": "lobby_update", "sessions": get_sessions_info()})
-    except Exception as e: logger.error(f"Start Error: {e}")
+    except Exception as e:
+        import traceback
+        logger.error(f"[START] ❌ Start Error: {e}\n{traceback.format_exc()}")
     return {"status": "started"}
 
 @app.post("/join")
 async def join_session(request: JoinRequest):
     sid = request.session_id
-    if sid not in sessions: sessions[sid] = SessionState(session_id=sid, turn_start_time=time.time(), last_activity=time.time())
+    logger.info(f"[JOIN] Player '{request.player_name}' joining session '{sid}'")
+    if sid not in sessions:
+        sessions[sid] = SessionState(session_id=sid, turn_start_time=time.time(), last_activity=time.time())
+        logger.info(f"[JOIN] Created new session '{sid}'")
     state = sessions[sid]
     name = request.player_name
     if name not in state.players:
-        if not state.host_name: state.host_name = name
+        if not state.host_name:
+            state.host_name = name
+            logger.info(f"[JOIN] '{name}' assigned as host")
         state.players.append(name)
         state.player_stats[name] = {"hp": 10, "ap": 10}
         state.player_statuses[name] = "Alive"
+        logger.info(f"[JOIN] '{name}' added to session (total players: {len(state.players)})")
+    else:
+        logger.info(f"[JOIN] '{name}' already in session, reconnecting")
     await manager.broadcast(sid, {"type": "state_update", "state": state.dict()})
     await manager.broadcast_lobby({"type": "lobby_update", "sessions": get_sessions_info()})
     return {"player_name": name, "session_id": sid, "is_host": state.host_name == name}
@@ -324,6 +402,11 @@ async def background_cleanup_task():
 
 @app.on_event("startup")
 async def startup_event():
+    logger.info("="*60)
+    logger.info("[STARTUP] AI TRPG Harness Server starting...")
+    logger.info(f"[STARTUP] Static files path: {static_path}")
+    logger.info(f"[STARTUP] GOOGLE_API_KEY configured: {'Yes' if os.getenv('GOOGLE_API_KEY') else 'NO!'}")
+    logger.info("="*60)
     asyncio.create_task(background_cleanup_task())
 
 if __name__ == "__main__":

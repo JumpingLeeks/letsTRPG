@@ -344,7 +344,8 @@
                 for (let i = displayedMessageCount; i < state.messages.length; i++) {
                     const msg = state.messages[i];
                     if (msg.sender !== myName) {
-                        appendMsg(msg.text, 'gm-msg', msg.sender);
+                        // msg 객체 전체를 전달 → choices 필드가 자동으로 처리됨
+                        appendMsg(msg, 'gm-msg', msg.sender);
                     }
                 }
                 displayedMessageCount = state.messages.length;
@@ -482,41 +483,62 @@
             timerInterval = setInterval(refresh, 1000);
         }
 
-        function appendMsg(text, type, tag = "") {
+        /**
+         * appendMsg: 메시지 렌더링
+         * @param {string|object} msgData - 텍스트 문자열 또는 {text, choices} 객체
+         * @param {string} type - CSS 클래스 ('gm-msg' | 'user-msg' | 'system-msg')
+         * @param {string} tag - 발신자 태그
+         */
+        function appendMsg(msgData, type, tag = "") {
             const chatLog = document.getElementById('chat-log');
             const div = document.createElement('div');
             div.className = `msg ${type}`;
             if (tag) div.innerHTML = `<span class="gm-tag">${tag}</span>`;
-            
-            const choiceRegex = /\[(.+?) 선택지(?: \d+)?\((\d+)\): (.+?)\]/g;
-            const choices = [...text.matchAll(choiceRegex)].map(m => ({
-                pName: m[1],
-                prob: parseInt(m[2]),
-                text: m[3]
-            }));
-            const cleanText = text.replace(choiceRegex, '').trim();
-            
+
+            // msgData가 객체면 structured output, 문자열이면 레거시 처리
+            let text = "";
+            let structuredChoices = [];
+
+            if (typeof msgData === 'object' && msgData !== null && msgData.text !== undefined) {
+                text = msgData.text || "";
+                structuredChoices = msgData.choices || [];
+            } else {
+                text = String(msgData);
+            }
+
+            // [Phase 3] 구조화된 choices가 있으면 직접 사용 (정규식 불필요)
+            let myChoices = structuredChoices.filter(c => c.player === myName);
+
+            // [Fallback] choices가 없을 때만 정규식 파싱 (하위 호환)
+            if (myChoices.length === 0 && type === 'gm-msg') {
+                const choiceRegex = /\[(.+?)\s+선택지\s*(?:\d+)?\s*(?:\((\d+)\))?\s*:\s*(.+?)\]/g;
+                const matches = [...text.matchAll(choiceRegex)].map(m => ({
+                    player: m[1].trim(),
+                    probability: m[2] ? parseInt(m[2]) : 50,
+                    text: m[3].trim()
+                }));
+                myChoices = matches.filter(c => c.player === myName);
+                // 정규식으로 파싱된 선택지는 텍스트에서 제거
+                text = text.replace(choiceRegex, '').trim();
+            }
+
             const content = document.createElement('span');
-            content.innerText = cleanText;
+            content.innerText = text;
             div.appendChild(content);
 
-            if (choices.length > 0 && type === 'gm-msg') {
+            if (myChoices.length > 0 && type === 'gm-msg') {
                 const btnContainer = document.createElement('div');
                 btnContainer.style.marginTop = '10px';
-                choices.forEach(c => {
-                    // 본인 이름의 선택지만 버튼으로 생성
-                    if (c.pName === myName) {
-                        const btn = document.createElement('button');
-                        btn.className = 'btn-send';
-                        btn.style.padding = '8px'; btn.style.fontSize = '0.8rem'; btn.style.marginBottom = '5px'; btn.style.marginRight = '5px';
-                        // [보완] 확률 수치(%) 노출 제거
-                        btn.innerText = `🎲 ${c.text}`;
-                        btn.onclick = () => {
-                            handleChoice(c);
-                            btnContainer.remove();
-                        };
-                        btnContainer.appendChild(btn);
-                    }
+                myChoices.forEach(c => {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-send';
+                    btn.style.cssText = 'padding:8px; font-size:0.8rem; margin-bottom:5px; margin-right:5px; display:block;';
+                    btn.innerText = `🎲 ${c.text}`;
+                    btn.onclick = () => {
+                        handleChoice({ pName: c.player, prob: c.probability, text: c.text });
+                        btnContainer.remove();
+                    };
+                    btnContainer.appendChild(btn);
                 });
                 div.appendChild(btnContainer);
             }
